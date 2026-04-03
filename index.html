@@ -726,6 +726,7 @@ tbody tr:hover { background: #f8fafc; }
         </div>
         <div class="mform-group full-width">
           <label>Kelas yang Diminati (pilih lebih dari satu)</label>
+          <!-- ↓ Dynamically populated from getClassesMaster (aktif only) -->
           <div class="checkbox-group" id="regKelasGroup">
             <div style="color:var(--text-muted); font-size:0.82rem; padding:4px;">Memuat kelas...</div>
           </div>
@@ -790,6 +791,10 @@ tbody tr:hover { background: #f8fafc; }
       </div>
       <div class="nav-item" onclick="showPage('laporan')" data-page="laporan" data-role="admin">
         <span class="nav-icon">📈</span> Laporan & Export
+      </div>
+      <!-- ↓ NEW: Tipe Kelas nav item -->
+      <div class="nav-item" onclick="showPage('tipe-kelas')" data-page="tipe-kelas" data-role="admin">
+        <span class="nav-icon">🗂️</span> Tipe Kelas
       </div>
       <div class="nav-item" onclick="showPage('pengaturan')" data-page="pengaturan" data-role="admin">
         <span class="nav-icon">⚙️</span> Pengaturan
@@ -1074,6 +1079,19 @@ tbody tr:hover { background: #f8fafc; }
         </div>
       </div>
 
+      <!-- ==================== TIPE KELAS (NEW) ==================== -->
+      <div class="page-section" id="page-tipe-kelas">
+        <div class="section-header">
+          <div class="section-title">🗂️ Master Tipe Kelas</div>
+          <button class="btn btn-blue" onclick="openClassModal()">➕ Tambah Tipe Kelas</button>
+        </div>
+        <div class="card">
+          <div id="classMasterTableWrap">
+            <div class="empty-state"><div class="empty-icon">🗂️</div><p>Memuat data...</p></div>
+          </div>
+        </div>
+      </div>
+
       <!-- ==================== PENGATURAN ==================== -->
       <div class="page-section" id="page-pengaturan">
         <div class="section-header">
@@ -1237,6 +1255,36 @@ tbody tr:hover { background: #f8fafc; }
   </div>
 </div>
 
+<!-- ↓ NEW: Modal Tipe Kelas -->
+<div class="modal-overlay" id="modalTipeKelas">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <div class="modal-title" id="classModalTitle">➕ Tambah Tipe Kelas</div>
+      <button class="modal-close" onclick="closeModal('modalTipeKelas')">✕</button>
+    </div>
+    <input type="hidden" id="classId">
+    <div class="mform-group">
+      <label>Nama Kelas <span style="color:var(--danger)">*</span></label>
+      <input type="text" id="classNama" placeholder="Contoh: Matematika">
+    </div>
+    <div class="mform-group">
+      <label>Deskripsi</label>
+      <textarea id="classDeskripsi" rows="3" placeholder="Deskripsi singkat kelas..." style="resize:vertical;"></textarea>
+    </div>
+    <div class="mform-group">
+      <label>Status</label>
+      <select id="classStatus">
+        <option value="aktif">Aktif</option>
+        <option value="tidak aktif">Tidak Aktif</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modalTipeKelas')">Batal</button>
+      <button class="btn btn-blue" onclick="saveClass()">💾 Simpan</button>
+    </div>
+  </div>
+</div>
+
 <!-- Print Struk -->
 <div id="printStruk"></div>
 
@@ -1252,6 +1300,7 @@ let currentUser = null;
 let allStudents = [];
 let allSchedules = [];
 let allPayments = [];
+let classMasterData = [];
 let notifInterval = null;
 let countdownInterval = null;
 
@@ -1438,7 +1487,6 @@ function applySettings(data) {
 }
 
 function populateSettingsForm() {
-  // Try from localStorage cache
   const c = {};
   ['app_name','tagline','logo_url','primary_color'].forEach(k => {
     const v = localStorage.getItem('dct_setting_' + k);
@@ -1457,7 +1505,6 @@ async function saveSettings() {
     logo_url: document.getElementById('setLogoUrl').value,
     primary_color: document.getElementById('setPrimaryColor').value
   };
-  // Cache
   Object.entries(data).forEach(([k,v]) => localStorage.setItem('dct_setting_' + k, v));
   applySettings(data);
   try {
@@ -1836,14 +1883,12 @@ async function loadAbsensiSiswa() {
   const jadwal = allSchedules.find(s => s.id === jadwalId);
   const tanggal = document.getElementById('absensiTanggal').value;
 
-  // Get existing attendance
   let existingAbs = [];
   try {
     const res = await apiCall('getAttendance', { schedule_id: jadwalId, tanggal });
     if (res.success) existingAbs = res.data;
   } catch(e) {}
 
-  // Filter students enrolled in this class
   const kelasSiswa = jadwal ? allStudents.filter(s =>
     (s.kelas_diikuti || '').split(',').map(k=>k.trim()).includes(jadwal.nama_kelas) && s.status === 'aktif'
   ) : allStudents.filter(s => s.status === 'aktif');
@@ -1879,7 +1924,6 @@ function setAbsensi(studentId, status, btn) {
   });
   btn.classList.add('active');
   btn.dataset.selectedStatus = status;
-  // Store selection
   document.getElementById('btn_' + status + '_' + studentId).dataset.pending = 'true';
 }
 
@@ -2131,7 +2175,6 @@ async function loadNotifications() {
     if (unread > 0) {
       badge.style.display = 'flex';
       badge.textContent = unread > 99 ? '99+' : unread;
-      // Update sidebar badge too
     } else {
       badge.style.display = 'none';
     }
@@ -2246,15 +2289,21 @@ function showRegPage() {
   loadRegClasses();
 }
 
+// ↓ UPDATED: now fetches from getClassesMaster (aktif only), with description
 async function loadRegClasses() {
   const group = document.getElementById('regKelasGroup');
+  group.innerHTML = '<div style="color:var(--text-muted); font-size:0.82rem; padding:4px;">Memuat kelas...</div>';
   try {
-    const res = await apiCall('getClasses');
-    if (res.success && res.data.length) {
-      group.innerHTML = res.data.map(c => `
+    const res = await apiCall('getClassesMaster');
+    const aktif = res.success ? res.data.filter(c => c.status === 'aktif') : [];
+    if (aktif.length) {
+      group.innerHTML = aktif.map(c => `
         <label class="checkbox-item">
           <input type="checkbox" value="${c.nama_kelas}">
-          ${c.nama_kelas}
+          <span>
+            <strong>${c.nama_kelas}</strong>
+            ${c.deskripsi ? '<span style="font-size:0.75rem; color:var(--text-muted); margin-left:4px;">— ' + c.deskripsi + '</span>' : ''}
+          </span>
         </label>`).join('');
     } else {
       group.innerHTML = '<label class="checkbox-item"><input type="checkbox" value="Umum"> Kelas Umum</label>';
@@ -2288,30 +2337,140 @@ async function submitRegistrasi() {
 }
 
 // ============================================================
+// TIPE KELAS MASTER (NEW)
+// ============================================================
+async function loadClassesMaster() {
+  const wrap = document.getElementById('classMasterTableWrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">🗂️</div><p>Memuat data...</p></div>';
+  try {
+    const res = await apiCall('getClassesMaster');
+    classMasterData = res.success ? res.data : [];
+    renderClassMasterTable(classMasterData);
+  } catch(e) {
+    wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p style="color:var(--danger);">Gagal memuat data tipe kelas.</p></div>';
+  }
+}
+
+function renderClassMasterTable(data) {
+  const wrap = document.getElementById('classMasterTableWrap');
+  if (!data.length) {
+    wrap.innerHTML = '<div class="empty-state"><div class="empty-icon">🗂️</div><p>Belum ada tipe kelas. Klik "➕ Tambah Tipe Kelas" untuk memulai.</p></div>';
+    return;
+  }
+  wrap.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Nama Kelas</th>
+            <th>Deskripsi</th>
+            <th>Status</th>
+            <th>Aksi</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.map((c, i) => `
+            <tr>
+              <td>${i + 1}</td>
+              <td><strong>${c.nama_kelas}</strong></td>
+              <td style="color:var(--text-muted); font-size:0.85rem;">${c.deskripsi || '<em>—</em>'}</td>
+              <td>
+                <span class="badge ${c.status === 'aktif' ? 'badge-green' : 'badge-red'}">
+                  ${c.status}
+                </span>
+              </td>
+              <td>
+                <button class="btn btn-ghost btn-sm" onclick='openClassModal(${JSON.stringify(c)})'>✏️ Edit</button>
+                <button class="btn btn-red btn-sm" onclick="deleteClassItem('${c.id}','${c.nama_kelas.replace(/'/g,"\\'")}')">🗑️</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function openClassModal(classObj) {
+  document.getElementById('classId').value        = classObj ? classObj.id : '';
+  document.getElementById('classNama').value      = classObj ? classObj.nama_kelas : '';
+  document.getElementById('classDeskripsi').value = classObj ? classObj.deskripsi : '';
+  document.getElementById('classStatus').value    = classObj ? classObj.status : 'aktif';
+  document.getElementById('classModalTitle').textContent = classObj ? '✏️ Edit Tipe Kelas' : '➕ Tambah Tipe Kelas';
+  openModal('modalTipeKelas');
+}
+
+async function saveClass() {
+  const id         = document.getElementById('classId').value;
+  const nama_kelas = document.getElementById('classNama').value.trim();
+  const deskripsi  = document.getElementById('classDeskripsi').value.trim();
+  const status     = document.getElementById('classStatus').value;
+
+  if (!nama_kelas) { showToast('Nama kelas wajib diisi!', 'error'); return; }
+
+  showLoading();
+  try {
+    const action = id ? 'updateClass' : 'addClass';
+    const params = { nama_kelas, deskripsi, status };
+    if (id) params.id = id;
+    const res = await apiCall(action, params);
+    if (res.success) {
+      showToast(res.message, 'success');
+      closeModal('modalTipeKelas');
+      loadClassesMaster();
+    } else {
+      showToast(res.message || 'Gagal menyimpan', 'error');
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+  hideLoading();
+}
+
+async function deleteClassItem(id, nama) {
+  if (!confirm(`Hapus tipe kelas "${nama}"?\nTindakan ini tidak bisa dibatalkan.`)) return;
+  showLoading();
+  try {
+    const res = await apiCall('deleteClass', { id });
+    if (res.success) {
+      showToast(res.message, 'success');
+      loadClassesMaster();
+    } else {
+      showToast(res.message || 'Gagal menghapus', 'error');
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+  hideLoading();
+}
+
+// ============================================================
 // SPA NAVIGATION
 // ============================================================
 const PAGE_TITLES = {
-  dashboard: '📊 Dashboard',
-  siswa: '👨‍🎓 Manajemen Siswa',
-  jadwal: '📅 Jadwal Kelas',
-  absensi: '✅ Absensi',
-  pembayaran: '💰 Pembayaran',
-  pendaftaran: '📝 Pendaftaran Masuk',
-  users: '👥 Manajemen User',
-  laporan: '📈 Laporan & Export',
-  pengaturan: '⚙️ Pengaturan'
+  dashboard:    '📊 Dashboard',
+  siswa:        '👨‍🎓 Manajemen Siswa',
+  jadwal:       '📅 Jadwal Kelas',
+  absensi:      '✅ Absensi',
+  pembayaran:   '💰 Pembayaran',
+  pendaftaran:  '📝 Pendaftaran Masuk',
+  users:        '👥 Manajemen User',
+  laporan:      '📈 Laporan & Export',
+  'tipe-kelas': '🗂️ Master Tipe Kelas',   // NEW
+  pengaturan:   '⚙️ Pengaturan'
 };
 
 const PAGE_LOADERS = {
-  dashboard: loadDashboard,
-  siswa: loadSiswa,
-  jadwal: loadJadwal,
-  absensi: async () => { if (!allStudents.length) await loadSiswa(); if (!allSchedules.length) await loadJadwal(); },
-  pembayaran: () => {},
-  pendaftaran: loadPendaftaran,
-  users: loadUsers,
-  laporan: () => {},
-  pengaturan: () => {}
+  dashboard:    loadDashboard,
+  siswa:        loadSiswa,
+  jadwal:       loadJadwal,
+  absensi:      async () => { if (!allStudents.length) await loadSiswa(); if (!allSchedules.length) await loadJadwal(); },
+  pembayaran:   () => {},
+  pendaftaran:  loadPendaftaran,
+  users:        loadUsers,
+  laporan:      () => {},
+  'tipe-kelas': loadClassesMaster,         // NEW
+  pengaturan:   () => {}
 };
 
 function showPage(id) {
